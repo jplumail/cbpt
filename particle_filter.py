@@ -6,7 +6,7 @@ import os
 ###############################
 
 class Tracker(object):
-    def __init__(self, name, startIndex=1, endIndex=np.inf, form='square', n_particles=100, dt=0.1, firstMask=False, plot=True, video="", step=1):
+    def __init__(self, name, startIndex=1, endIndex=np.inf, form='square', n_particles=100, dt=0.1, firstMask=False, plot=True, video="", step=1, **pf_args):
         # Data frame settings
         self.name = name
         self.startIndex = startIndex
@@ -20,6 +20,7 @@ class Tracker(object):
         self.n_particles = n_particles
         self.dt = dt
         self.firstMask = firstMask # Use the first mask to compute the first hist # ***recent***
+        self.pf_args = pf_args
 
         # Plot/video
         self.video = video
@@ -43,6 +44,7 @@ class Tracker(object):
         self.index = self.startIndex
         self.pf = None
         self.out = None
+        self.scores = []
 
     # Main function
     def track(self, n=-1):
@@ -58,7 +60,6 @@ class Tracker(object):
         while os.path.isfile(self.name+'-%0*d.bmp'%(3,self.index)) and self.index <= min(self.endIndex, stopIndex):
             
             # Read next frame
-            print("\n{}: {}".format(self.name, self.index))
             frame = cv2.imread(self.name+'-%0*d.bmp'%(3,self.index)) 
             orig = np.array(frame)
             self.preprocess(frame)
@@ -66,22 +67,35 @@ class Tracker(object):
             # Get next state of the particle filter
             x, y, shape_param, distrib, distrib_control = self.pf.next_state(frame)
             
-            # Add particles on frame
-            self.addDistribPoints(frame, distrib_control, self.RED, 7) # Before resampling
-            self.addDistribPoints(frame, distrib, self.BLUE, 3) # After resampling
-            #self.addDistribForms(frame, distrib_control, shape_param, self.RED, 7) # Before resampling
-            #self.addDistribForms(frame, distrib, shape_param, self.BLUE, 3) # After resampling
+            # Get groundtruth centroid
+            mask = cv2.imread(self.name+'-%0*d.png'%(3,self.index))
+            x_list, y_list, _ = (mask == 255).nonzero()
+            x_gtcentroid, y_gtcentroid = x_list.mean(), y_list.mean()
+
+            # Add score
+            score = self.centroidScore(x, y, x_gtcentroid, y_gtcentroid)
+            self.scores.append(score)
             
-            # Add the center and the associated bounding box
-            cv2.circle(frame, (y, x), 1, self.GREEN, thickness=2) 
-            self.addForm(frame, x, y, shape_param, self.GREEN)
-
-            # Set the image to display
-            cv2.addWeighted(orig, self.alpha, frame, 1 - self.alpha, 0, frame)   
-            self.create_legend(frame, (40,40), (40,20))
-
-            # Plot frame
             if self.plot:
+                print("\n{}: {}".format(self.name, self.index))
+                # Add particles on frame
+                self.addDistribPoints(frame, distrib_control, self.RED, 7) # Before resampling
+                self.addDistribPoints(frame, distrib, self.BLUE, 3) # After resampling
+                #self.addDistribForms(frame, distrib_control, shape_param, self.RED, 7) # Before resampling
+                #self.addDistribForms(frame, distrib, shape_param, self.BLUE, 3) # After resampling
+                
+                # Add the center and the associated bounding box
+                cv2.circle(frame, (y, x), 1, self.GREEN, thickness=2) 
+                self.addForm(frame, x, y, shape_param, self.GREEN)
+
+                # Add groundtruth centroid
+                cv2.circle(frame, (y_centroid, x_gtcentroid), 1, (122,122,255), thickness=2)
+
+                # Set the image to display
+                cv2.addWeighted(orig, self.alpha, frame, 1 - self.alpha, 0, frame)   
+                self.create_legend(frame, (40,40), (40,20))
+
+                # Plot frame
                 plt.figure(self.index)
                 plt.imshow(frame)
                 plt.show()
@@ -110,28 +124,34 @@ class Tracker(object):
         # Define initial parameters
         x, y, shape_param = self.initParam(mask)
 
+        # True centroid
+        x_list, y_list, _ = (mask == 255).nonzero()
+        x_gtcentroid, y_gtcentroid = x_list.mean(), y_list.mean()
+        self.scores = [self.centroidScore(x, y, x_gtcentroid, y_gtcentroid)]
+
         # Initialize the particle filter
         if self.firstMask:
-            self.pf = ParticleFilter(x, y, frame, mask, self.n_particles, self.dt, shape_param, self.getShapeMask, self.form)
+            self.pf = ParticleFilter(x, y, frame, mask, self.n_particles, self.dt, shape_param, self.getShapeMask, self.form, **self.pf_args)
         else:
-            self.pf = ParticleFilter(x, y, frame, None, self.n_particles, self.dt, shape_param, self.getShapeMask, self.form)
+            self.pf = ParticleFilter(x, y, frame, None, self.n_particles, self.dt, shape_param, self.getShapeMask, self.form, **self.pf_args)
     
-        # Set the image to display
-        self.addForm(frame, x, y, shape_param, self.GREEN)
-        cv2.addWeighted(orig, self.alpha, frame, 1 - self.alpha, 0, frame)
+        if self.plot:
+            # Set the image to display
+            self.addForm(frame, x, y, shape_param, self.GREEN)
+            cv2.addWeighted(orig, self.alpha, frame, 1 - self.alpha, 0, frame)
 
-        # Display infos
-        print("Frame shape:", frame.shape)
-        print("x, y = {}, {}".format(x,y))
-        print("Shape param = {}".format(shape_param))
+            # Display infos
+            print("Frame shape:", frame.shape)
+            print("x, y = {}, {}".format(x,y))
+            print("Shape param = {}".format(shape_param))
 
-        # Plot first frame and mask
-        plt.figure(1)
-        plt.subplot(121)
-        plt.imshow(frame)
-        plt.subplot(122)
-        plt.imshow(mask)
-        plt.show()
+            # Plot first frame and mask
+            plt.figure(1)
+            plt.subplot(121)
+            plt.imshow(frame)
+            plt.subplot(122)
+            plt.imshow(mask)
+            plt.show()
 
         # Set a video writer to save frames  in a video file
         if self.video:
@@ -161,6 +181,10 @@ class Tracker(object):
             shapeParam = [x_list.max() - x_list.min(), y_list.max() - y_list.min()]
 
         return x, y, shapeParam
+    
+    def centroidScore(self, x1, y1, x2, y2):
+        """Compare the history with another one"""
+        return ((x1-x2)**2 + (y1-y2)**2)**0.5
 
     def getShapeMask(self, img, x, y, shape_param):
         """ Return a mask of the input paramametrized form"""
@@ -338,7 +362,7 @@ class Tracker(object):
 #############################################################################################################################
 
 class ParticleFilter(object):
-    def __init__(self, x, y, first_frame, mask=None, n_particles=1000, dt=0.04, shape_param=[20], getShapeFunc=None, form='circle'):
+    def __init__(self, x, y, first_frame, mask=None, n_particles=1000, dt=0.04, shape_param=[20], getShapeFunc=None, form='circle', alpha=0.7, lbd=10, Nh=10, Ns=10, Nv=10, thresh_sat=0.1, thresh_val=0.2):
         self.n_iter = 0 # Number of iterations
         self.form = form # Shape of the window (string)
         self.n_particles = n_particles # Number of particles
@@ -355,9 +379,14 @@ class ParticleFilter(object):
                                         
         # Define histogram
         self.background_hist = None # Hist of the background, init in calc_hist
+        self.alpha = alpha # Weight to update hist
+        self.lbd = lbd # Factor in calculation of the distance of hists
+        self.Nh = Nh # nb Hue bins
+        self.Ns = Ns # nb Saturation bins
+        self.Nv = Nv # nb Value bins
+        self.thresh_sat = thresh_sat # Saturation threshold
+        self.thresh_val = thresh_val # Value threshold
         self.ref_hist = self.calc_hist(first_frame, x, y, shape_param, mask)
-        self.alpha = 0.7 # Weight to update hist
-        self.lbd = 10 # Factor in calculation of the distance of hists
 
         # Define parameters to limit size
         self.window_size = (first_frame.shape[0],first_frame.shape[1])
@@ -457,25 +486,23 @@ class ParticleFilter(object):
            self.background_hist = self.calc_hist(frame, False, False, False, inverse_mask)
 
         # Apply threshold creating to images
-        thresh_sat, thresh_val = 0.1, 0.2 # Thresholds on saturation and value
         image_hs = np.array(hsv, np.uint16)
         image_v = np.array(hsv, np.uint16)
         
-        image_v[(hsv[:,:,1] > thresh_sat*180) & (hsv[:,:,2] > thresh_val*255), 0] = -1 # (not to be taken into account in the hist)
+        image_v[(hsv[:,:,1] > self.thresh_sat*180) & (hsv[:,:,2] > self.thresh_val*255), 0] = -1 # (not to be taken into account in the hist)
         image_hs[image_v[:,:,0] != -1, 2] = -1 # same...
         
         # Compute H/S and V histograms 
-        Nh, Ns, Nv = 10, 10, 10 # Number of bins for each channel
-        Nbins = Nh*Ns + Nv # Total number of bins
-        hist_hs = cv2.calcHist([image_hs], [0, 1], mask, [Nh, Ns], [0, 181, 0, 256]) # Hue/Saturation histogram
-        hist_v = cv2.calcHist([image_v], [2], mask, [Nv], [0, 256]) # Value histogram
+        Nbins = self.Nh*self.Ns + self.Nv # Total number of bins
+        hist_hs = cv2.calcHist([image_hs], [0, 1], mask, [self.Nh, self.Ns], [0, 181, 0, 256]) # Hue/Saturation histogram
+        hist_v = cv2.calcHist([image_v], [2], mask, [self.Nv], [0, 256]) # Value histogram
         
         # Normalize histograms
         cv2.normalize(hist_hs, hist_hs, 0, 1, norm_type=cv2.NORM_MINMAX)
         cv2.normalize(hist_v, hist_v, 0, 1, norm_type=cv2.NORM_MINMAX)
             
         # Concatenate both histograms (weighted)
-        hist = np.concatenate((hist_hs.flatten()*Nh*Ns/Nbins, hist_v.flatten()*Nv/Nbins))
+        hist = np.concatenate((hist_hs.flatten()*self.Nh*self.Ns/Nbins, hist_v.flatten()*self.Nv/Nbins))
         return hist
 
     def candidate_histograms(self, predictions, image):

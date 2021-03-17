@@ -17,7 +17,7 @@ def get_view(image,x,y,sq_size):
                  int(y-sq_size/2):int(y+sq_size/2),:]
     return view
     
-def calc_hist(image):
+def calc_hist(image, mask=None, Nh=10, Ns=10, Nv=10):
     """
     Computes the color histogram of an image (or from a region of an image).
     
@@ -25,24 +25,20 @@ def calc_hist(image):
 
     return: One dimensional Numpy array
     """
-    mask = cv2.inRange(image, np.array((0., 60.,32.)), np.array((180.,255.,255.)))
-    hist = cv2.calcHist([image],[0],mask,[180],[0,180])
+    mask_hs = cv2.inRange(image, np.array((25., 50.,0)), np.array((180.,255.,255.)))
+    mask_v = cv2.bitwise_not(mask_hs)
+    if mask is not None:
+        mask_hs = cv2.bitwise_and(mask, mask_hs)
+        mask_v = cv2.bitwise_and(mask, mask_v)
+    hist_hs = cv2.calcHist([image],[0,1],mask_hs,[Nh,Ns],[0,180,0,256])
+    hist_v = cv2.calcHist([image], [2], mask_v, [Nv], [0,256])
+    hist = np.concatenate([hist_hs.flatten(), hist_v.flatten()])
     cv2.normalize(hist,hist,0,1,norm_type=cv2.NORM_MINMAX)
     return hist
-
-def comp_hist(hist1,hist2):
-    """
-    Compares two histograms together using the article's metric
-
-    hist1,hist2: One dimensional numpy arrays
-    return: A number
-    """
-    lbd = 20
-    return np.exp(lbd*np.sum(hist1*hist2))
     
 
 class ParticleFilter(object):
-    def __init__(self,x,y,first_frame,n_particles=1000,dt=0.04,
+    def __init__(self,x,y,first_frame,mask=None,n_particles=1000,dt=0.04,
                     window_size=(480,640),square_size=20):
         self.n_particles = n_particles
         self.n_iter = 0
@@ -54,6 +50,7 @@ class ParticleFilter(object):
         
         self.max_square = window_size[0]*0.5
         self.min_square = window_size[0]*0.1
+        self.lbd = 20
 
         self.A = np.array([[1+dt,0,0],
                            [0,1+dt,0],
@@ -66,9 +63,11 @@ class ParticleFilter(object):
 
 
         self.particles = init_particles(self.state,n_particles)
-        self.last_particles = np.array(self.particles)                                
-                                        
-        self.hist = calc_hist(get_view(first_frame,x,y,square_size))
+        self.last_particles = np.array(self.particles)
+        mask = (mask*255).astype('uint8')
+        mask = mask[...,np.newaxis]
+        self.hist = calc_hist(get_view(first_frame,x,y,square_size),
+                            mask=get_view(mask,x,y,square_size)[:,:,0])
         
      
     def next_state(self,frame):       
@@ -86,7 +85,7 @@ class ParticleFilter(object):
 
         self.last_frame = np.array(frame)
         self.n_iter += 1
-        self.hist = calc_hist(get_view(frame,self.state[0],self.state[1],self.state[2]))
+        #self.hist = calc_hist(get_view(frame,self.state[0],self.state[1],self.state[2]))
         
 
         
@@ -109,10 +108,19 @@ class ParticleFilter(object):
             v = get_view(image,x[0],x[1],x[2])
             hists.append(calc_hist(v))
         return hists
+    
+    def comp_hist(self,hist1,hist2):
+        """
+        Compares two histograms together using the article's metric
+
+        hist1,hist2: One dimensional numpy arrays
+        return: A number
+        """
+        return np.exp(self.lbd*np.sum((hist1*hist2)**0.5))
         
     def compare_histograms(self,hists,last_hist):
         "Compare histogram of current (last) histogram and all candidates"
-        weights = np.array(list(map(lambda x: comp_hist(x,last_hist),hists)))
+        weights = np.array(list(map(lambda x: self.comp_hist(x,last_hist),hists)))
         return weights/np.sum(weights)
 
     def resample(self,predictions,weights):
@@ -122,8 +130,8 @@ class ParticleFilter(object):
         return predictions[inds]
     def filter_borders(self,predictions):  
         "Remove candidates that will not have the correct square size."
-        np.clip(predictions[:,0],self.state[2]+1,self.window_size[0]-(1+self.state[2]),predictions[:,0])        
-        np.clip(predictions[:,1],self.state[2]+1,self.window_size[1]-(1+self.state[2]),predictions[:,1])
         np.clip(predictions[:,2],self.min_square,self.max_square,predictions[:,2])
+        np.clip(predictions[:,0],predictions[:,2]+1,self.window_size[0]-(1+predictions[:,2]),predictions[:,0])        
+        np.clip(predictions[:,1],predictions[:,2]+1,self.window_size[1]-(1+predictions[:,2]),predictions[:,1])
         
         return predictions

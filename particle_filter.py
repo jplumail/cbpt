@@ -6,9 +6,10 @@ import os
 ###############################
 
 class Tracker(object):
-    def __init__(self, name, startIndex=1, endIndex=np.inf, form='square', n_particles=100, dt=0.1, firstMask=False, plot=True, video="", step=1, **pf_args):
+    def __init__(self, name=None, data_dir=None, startIndex=1, endIndex=np.inf, form='square', n_particles=100, dt=0.1, firstMask=False, plot=True, video="", step=1, **pf_args):
         # Data frame settings
         self.name = name
+        self.path = os.path.join(data_dir, name)
         self.startIndex = startIndex
         self.index = startIndex
         self.endIndex = endIndex
@@ -57,10 +58,10 @@ class Tracker(object):
 
         # Track the object through the frames
         self.index += self.step
-        while os.path.isfile(self.name+'-%0*d.bmp'%(3,self.index)) and self.index <= min(self.endIndex, stopIndex):
+        while os.path.isfile(self.path+'-%0*d.bmp'%(3,self.index)) and self.index <= min(self.endIndex, stopIndex):
             
             # Read next frame
-            frame = cv2.imread(self.name+'-%0*d.bmp'%(3,self.index)) 
+            frame = cv2.imread(self.path+'-%0*d.bmp'%(3,self.index)) 
             orig = np.array(frame)
             self.preprocess(frame)
             
@@ -68,7 +69,7 @@ class Tracker(object):
             x, y, shape_param, distrib, distrib_control = self.pf.next_state(frame)
             
             # Get groundtruth centroid
-            mask = cv2.imread(self.name+'-%0*d.png'%(3,self.index))
+            mask = cv2.imread(self.path+'-%0*d.png'%(3,self.index))
             x_list, y_list, _ = (mask == 255).nonzero()
             x_gtcentroid, y_gtcentroid = x_list.mean(), y_list.mean()
 
@@ -114,8 +115,8 @@ class Tracker(object):
 
     def setFirstFrame(self):
         # Read initial image/mask and define bounding box
-        mask = cv2.imread(self.name+'-%0*d.png'%(3,self.index))
-        frame = cv2.imread(self.name+'-%0*d.bmp'%(3,self.index))
+        mask = cv2.imread(self.path+'-%0*d.png'%(3,self.index))
+        frame = cv2.imread(self.path+'-%0*d.bmp'%(3,self.index))
         orig = np.array(frame)
         
         # Preprocess frame
@@ -362,7 +363,7 @@ class Tracker(object):
 #############################################################################################################################
 
 class ParticleFilter(object):
-    def __init__(self, x, y, first_frame, mask=None, n_particles=1000, dt=0.04, shape_param=[20], getShapeFunc=None, form='circle', alpha=0.7, lbd=10, Nh=10, Ns=10, Nv=10, thresh_sat=0.1, thresh_val=0.2):
+    def __init__(self, x, y, first_frame, mask=None, n_particles=100, dt=0.04, shape_param=[20], getShapeFunc=None, form='circle', alpha=0.7, lbd=10, Nh=10, Ns=10, Nv=10, thresh_sat=0.1, thresh_val=0.2, background=False):
         self.n_iter = 0 # Number of iterations
         self.form = form # Shape of the window (string)
         self.n_particles = n_particles # Number of particles
@@ -379,6 +380,7 @@ class ParticleFilter(object):
                                         
         # Define histogram
         self.background_hist = None # Hist of the background, init in calc_hist
+        self.background = background
         self.alpha = alpha # Weight to update hist
         self.lbd = lbd # Factor in calculation of the distance of hists
         self.Nh = Nh # nb Hue bins
@@ -480,7 +482,7 @@ class ParticleFilter(object):
             mask = mask[:,:,0]  
 
         # Initiatlize background histogram
-        if self.background_hist is None:
+        if self.background and self.background_hist is None:
            self.background_hist = True # Not None anymore
            inverse_mask = 1 - mask
            self.background_hist = self.calc_hist(frame, False, False, False, inverse_mask)
@@ -525,8 +527,10 @@ class ParticleFilter(object):
         hist1,hist2: One dimensional numpy arrays
         return: A number
         """
-        #return np.exp(-self.lbd*(np.linalg.norm(hist2-hist1)-np.linalg.norm(self.background_hist-hist1))) # Background taken into account
-        return np.exp(-self.lbd*np.linalg.norm(hist2-hist1))
+        if self.background:
+            return np.exp(-self.lbd*(np.linalg.norm(hist2-hist1)-np.linalg.norm(self.background_hist-hist1))) # Background taken into account
+        else:
+            return np.exp(-self.lbd*np.linalg.norm(hist2-hist1))
         #return np.exp(lbd*np.sum(np.sqrt(hist1*hist2)))
      
     def resample(self, predictions, weights):
